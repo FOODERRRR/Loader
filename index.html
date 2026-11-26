@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Launcher</title>
+<style>
+:root{--bg:#eceff3;--ink:#12161c;--mut:#566070;--line:#c9d0da;--ac:#1f4fd8;--on:#fff}
+@media (prefers-color-scheme:dark){:root{--bg:#12151a;--ink:#e8ebf0;--mut:#9aa4b3;--line:#2c333d;--ac:#6d93ff;--on:#0b1020}}
+*{box-sizing:border-box}
+body{margin:0;padding:2.5rem 1.25rem;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:34rem;margin:0 auto}
+h1{font:600 2rem/1.2 ui-monospace,Menlo,Consolas,monospace;margin:0 0 .5rem}
+h2{font-size:1.05rem;margin:0 0 .25rem}
+p{margin:0 0 .9rem;color:var(--mut);max-width:60ch}
+section{padding:1.5rem 0;border-top:1px solid var(--line)}
+input{display:block;margin:0 0 .75rem;max-width:100%;color:var(--ink)}
+button,.bm{font:inherit;padding:.5rem 1.1rem;margin:0 .35rem .5rem 0;border-radius:6px;border:1px solid var(--ac);background:var(--ac);color:var(--on);cursor:pointer;text-decoration:none;display:inline-block}
+button.ghost{background:none;color:var(--ink);border-color:var(--line)}
+button:disabled{opacity:.45;cursor:default}
+:focus-visible{outline:2px solid var(--ac);outline-offset:2px}
+#status{color:var(--ink);min-height:1.55em}
+</style>
+</head>
+<body>
+<main>
+<h1>about:blank</h1>
+<p>Opens a page in a blank-address tab by writing it straight into that tab. No iframe.</p>
+
+<section>
+<h2>From a saved file</h2>
+<p>Choose your saved single-file .html copy once. It stays in this browser, so next time you only press Launch.</p>
+<input id="pick" type="file" accept=".html,.htm,text/html">
+<p id="status">No file saved yet.</p>
+<button id="launch" disabled>Launch</button>
+<button id="blob" class="ghost" disabled title="Use this if Launch crashes the tab">Launch (blob tab)</button>
+<button id="forget" class="ghost" disabled>Forget file</button>
+</section>
+
+<section>
+<h2>From the live site</h2>
+<p>Drag this button to your bookmarks bar. Open the site, then click the bookmark.</p>
+<a id="bm" class="bm" href="#">Open in about:blank</a>
+</section>
+</main>
+
+<script>
+const $=id=>document.getElementById(id);
+const say=t=>{$('status').textContent=t};
+const mb=n=>(n/1048576).toFixed(1)+' MB';
+const tick=()=>new Promise(r=>setTimeout(r,0));
+let saved=null;
+
+const db=()=>new Promise((ok,no)=>{
+  const r=indexedDB.open('launcher',1);
+  r.onupgradeneeded=()=>r.result.createObjectStore('f');
+  r.onsuccess=()=>ok(r.result);
+  r.onerror=()=>no(r.error);
+});
+const idb=async(mode,fn)=>{
+  const d=await db();
+  return new Promise((ok,no)=>{
+    const t=d.transaction('f',mode);
+    const q=fn(t.objectStore('f'));
+    t.oncomplete=()=>ok(q&&q.result);
+    t.onerror=()=>no(t.error);
+  });
+};
+const sync=()=>{
+  $('launch').disabled=!saved;
+  $('blob').disabled=!saved;
+  $('forget').disabled=!saved;
+};
+
+/* Stream a Blob into a window in small chunks (safe for big files). */
+async function streamInto(w,blob){
+  const rd=blob.stream().pipeThrough(new TextDecoderStream()).getReader();
+  w.document.open();
+  let pending='';
+  for(;;){
+    const {value,done}=await rd.read();
+    if(value)pending+=value;
+    if(pending.length>=262144||(done&&pending)){
+      if(w.closed)throw new Error('The new tab was closed.');
+      w.document.write(pending);
+      pending='';
+      await tick();
+    }
+    if(done)break;
+  }
+  w.document.close();
+}
+
+(async()=>{
+  try{
+    let s=(await idb('readonly',s=>s.get('page')))||null;
+    if(s&&typeof s.html==='string'){
+      s={name:s.name,blob:new Blob([s.html],{type:'text/html'})};
+    }
+    saved=s;
+  }catch(e){}
+  if(saved)say('Saved: '+saved.name+' ('+mb(saved.blob.size)+'). Ready to launch.');
+  sync();
+})();
+
+$('pick').onchange=async e=>{
+  const f=e.target.files[0];
+  if(!f)return;
+  const head=await f.slice(0,30000).text();
+  if(head.includes('id="forget"')&&head.includes('Opens a page in a blank-address tab')){
+    $('pick').value='';
+    return say('That is the launcher itself, not your game. Pick the game\'s saved .html file.');
+  }
+  saved={name:f.name,blob:new Blob([f],{type:'text/html'})};
+  try{
+    await idb('readwrite',s=>s.put(saved,'page'));
+    say('Saved: '+f.name+' ('+mb(f.size)+'). Ready to launch.');
+  }catch(err){
+    say('Loaded for this session only (browser storage is unavailable): '+f.name);
+  }
+  sync();
+};
+
+$('forget').onclick=async()=>{
+  try{await idb('readwrite',s=>s.delete('page'))}catch(e){}
+  saved=null;
+  $('pick').value='';
+  say('No file saved yet.');
+  sync();
+};
+
+$('launch').onclick=async()=>{
+  const w=window.open('about:blank','_blank');
+  if(!w)return say('Popup blocked. Allow popups for this page, then press Launch again.');
+  say('Launching...');
+  try{
+    await streamInto(w,saved.blob);
+    say('Saved: '+saved.name+' ('+mb(saved.blob.size)+'). Ready to launch.');
+  }catch(err){
+    try{w.close()}catch(e){}
+    say('Could not launch: '+err.message);
+  }
+};
+
+$('blob').onclick=()=>{
+  const u=URL.createObjectURL(saved.blob);
+  const w=window.open(u,'_blank');
+  if(!w)return say('Popup blocked. Allow popups for this page, then try again.');
+  setTimeout(()=>URL.revokeObjectURL(u),60000);
+};
+
+const bmFn=async()=>{
+  const w=window.open('about:blank','_blank');
+  if(!w){alert('Allow popups for this site, then click the bookmark again.');return}
+  try{
+    const u=location.href.split('#')[0];
+    const res=await fetch(u,{cache:'no-store'});
+    const rd=res.body.pipeThrough(new TextDecoderStream()).getReader();
+    const b='<base href="'+u+'">';
+    let first=true,pending='';
+    w.document.open();
+    for(;;){
+      const r=await rd.read();
+      if(r.value)pending+=r.value;
+      if(pending.length>=262144||(r.done&&pending)){
+        if(first){
+          pending=/<head[^>]*>/i.test(pending)?pending.replace(/<head[^>]*>/i,m=>m+b):b+pending;
+          first=false;
+        }
+        w.document.write(pending);
+        pending='';
+        await new Promise(x=>setTimeout(x,0));
+      }
+      if(r.done)break;
+    }
+    w.document.close();
+  }catch(err){
+    try{w.close()}catch(e){}
+    alert('Could not open: '+err.message);
+  }
+};
+$('bm').href='javascript:void('+encodeURIComponent('('+bmFn+')()')+')';
+$('bm').onclick=e=>{e.preventDefault();say('Drag that button to your bookmarks bar. Do not click it here.')};
+</script>
+</body>
+</html>
