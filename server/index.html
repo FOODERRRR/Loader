@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loading...</title>
+<style>
+body{margin:0;display:grid;place-items:center;min-height:100vh;font:16px system-ui,sans-serif;background:#12151a;color:#e8ebf0;text-align:center}
+p{color:#9aa4b3}
+a{color:#6d93ff}
+</style>
+</head>
+<body>
+<div>
+<p id="msg">Loading...</p>
+<p><a id="direct" href="#">Open directly instead</a></p>
+</div>
+<script>
+// Put your Render URL here (no trailing slash), e.g. https://my-proxy.onrender.com
+const RENDER_URL = 'https://YOUR-APP-NAME.onrender.com';
+
+const msg = t => { document.getElementById('msg').textContent = t; };
+document.getElementById('direct').href = RENDER_URL;
+
+async function load() {
+  for (let i = 1; i <= 6; i++) {
+    try {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 20000);
+      const res = await fetch(RENDER_URL + '/', { signal: ctl.signal, cache: 'no-store' });
+      clearTimeout(t);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      let h = await res.text();
+      const base = '<base href="' + RENDER_URL + '/">';
+      h = /<head[^>]*>/i.test(h) ? h.replace(/<head[^>]*>/i, m => m + base) : base + h;
+      document.open();
+      document.write(h);
+      document.close();
+      return;
+    } catch (e) {
+      msg('Waking up the server (free hosting sleeps)... attempt ' + i + ' of 6');
+    }
+  }
+  msg('Could not load it here.');
+}
+load();
+</script>
+</body>
+</html>
